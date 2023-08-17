@@ -17,6 +17,7 @@ from .model import load_model
 from . import MODEL
 from . import HOST
 from . import PORT
+from . import MODEL_LORA_ADAPTER
 from . import MODEL_REVISION
 from . import MODEL_CACHE_DIR
 from . import MODEL_LOAD_IN_8BIT
@@ -40,6 +41,7 @@ from . import COMPLETION_MAX_INTERVAL
 # Load the language model to be served.
 stream_model = load_model(
     name_or_path=MODEL,
+    lora_name_or_path=MODEL_LORA_ADAPTER or None,
     revision=MODEL_REVISION,
     cache_dir=MODEL_CACHE_DIR,
     load_in_8bit=MODEL_LOAD_IN_8BIT,

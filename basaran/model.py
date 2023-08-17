@@ -13,6 +13,7 @@ from transformers import (
     TemperatureLogitsWarper,
     TopPLogitsWarper,
 )
+from peft import PeftModel
 
 from .choice import map_choice
 from .tokenizer import StreamTokenizer
@@ -307,6 +308,7 @@ class StreamModel:
 
 def load_model(
     name_or_path,
+    lora_name_or_path=None,
     revision=None,
     cache_dir=None,
     load_in_8bit=False,
@@ -324,7 +326,14 @@ def load_model(
         kwargs["revision"] = revision
     if cache_dir:
         kwargs["cache_dir"] = cache_dir
-    tokenizer = AutoTokenizer.from_pretrained(name_or_path, **kwargs)
+    
+    if lora_name_or_path:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(lora_name_or_path, **kwargs)
+        except:
+            tokenizer = AutoTokenizer.from_pretrained(name_or_path, **kwargs)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(name_or_path, **kwargs)
 
     # Set device mapping and quantization options if CUDA is available.
     if torch.cuda.is_available():
@@ -342,6 +351,9 @@ def load_model(
         model = AutoModelForCausalLM.from_pretrained(name_or_path, **kwargs)
     except ValueError:
         model = AutoModelForSeq2SeqLM.from_pretrained(name_or_path, **kwargs)
+
+    if lora_name_or_path:
+        model = PeftModel.from_pretrained(model, lora_name_or_path, **kwargs)
 
     # Check if the model has text generation capabilities.
     if not model.can_generate():
