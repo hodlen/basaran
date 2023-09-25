@@ -251,8 +251,9 @@ class StreamModel:
 
             # Stop when all sequences are finished.
             if unstopped.sum() == 0:
-                yield from pending_buffer
                 break
+
+        yield from pending_buffer
 
     def generate_unbuffered(self, input_ids, logprobs=0, **kwargs):
         """Generate a stream of predicted tokens using the language model."""
