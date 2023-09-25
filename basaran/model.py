@@ -36,16 +36,32 @@ class StreamModel:
         top_p=1.0,
         n=1,
         logprobs=0,
+        stop="",
         echo=False,
         **kwargs,
     ):
         """Create a completion stream for the provided prompt."""
-        if isinstance(prompt, str):
-            input_ids = self.tokenize(prompt)
-        elif isinstance(prompt, torch.Tensor) and prompt.dim() == 1:
-            input_ids = prompt
-        else:
+
+        def _tokenize_if_str(text_repr):
+            if isinstance(text_repr, str):
+                return self.tokenize(text_repr)
+            elif isinstance(text_repr, torch.Tensor) and text_repr.dim() == 1:
+                return text_repr
+            else:
+                raise TypeError
+
+        try:
+            input_ids = _tokenize_if_str(prompt)
+        except TypeError:
             raise TypeError("prompt must be a string or a 1-d tensor")
+
+        try:
+            if isinstance(stop, str):
+                stop_sequences = [stop] if len(stop) > 0 else []
+            assert isinstance(stop_sequences, list)
+            stop_ids_list = [_tokenize_if_str(s) for s in stop_sequences]
+        except TypeError or AssertionError as e:
+            raise TypeError("stop_sequences must be a list of strings or 1-d tensors")
 
         # Ensure arguments are non-negative.
         min_tokens = max(min_tokens, 0)
@@ -90,6 +106,7 @@ class StreamModel:
             status,
         ) in self.generate(
             input_ids[None, :].repeat(n, 1),
+            stop_ids_list=stop_ids_list,
             **generate_kwargs,
         ):
             for i in range(n):
@@ -180,7 +197,7 @@ class StreamModel:
         batch = self.tokenizer.encode(text, return_tensors="pt")
         return batch[0].to(self.device)
 
-    def generate(self, input_ids, logprobs=0, **kwargs):
+    def generate(self, input_ids, logprobs=0, stop_ids_list=[], **kwargs):
         """Generate a stream of predicted tokens using the language model."""
 
         # Store the original batch size and input length.
@@ -291,6 +308,22 @@ class StreamModel:
             if eos_token_id is not None:
                 not_eos = sum(tokens != i for i in eos_token_id)
                 unfinished = unfinished.mul(not_eos.long())
+
+            # Mark sequences with tailing stop id seuqnces as finished.
+            def _match_stop_ids(stop_ids):
+                stop_len = stop_ids.shape[-1]
+                to_stop = input_ids[:, -stop_len:] == stop_ids
+                _to_stop = to_stop.reshape(-1)
+                if _to_stop.sum() > 0:
+                    print("stop by", stop_ids, "at", input_ids)
+                return to_stop
+
+            if len(stop_ids_list) > 0:
+                stop_match = sum(
+                    _match_stop_ids(stop_ids) for stop_ids in stop_ids_list
+                )
+                not_stop = (stop_match == 0).reshape(-1)
+                unfinished = unfinished.mul(not_stop.long())
 
             # Set status to -1 if exceeded the max length.
             status = unfinished.clone()
