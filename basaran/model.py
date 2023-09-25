@@ -36,7 +36,7 @@ class StreamModel:
         top_p=1.0,
         n=1,
         logprobs=0,
-        stop="",
+        stop=["\n", "."],
         echo=False,
         **kwargs,
     ):
@@ -198,6 +198,60 @@ class StreamModel:
         return batch[0].to(self.device)
 
     def generate(self, input_ids, logprobs=0, stop_ids_list=[], **kwargs):
+        """Generate a steram of predicted tokens using the language model, supporting multiple stop sequences."""
+        if len(stop_ids_list) == 0:
+            yield from self.generate_unbuffered(input_ids, logprobs, **kwargs)
+            return
+
+        batch_size = input_ids.shape[0]
+        unstopped = input_ids.new_ones(batch_size)
+
+        # Keep a buffer of pending generation results for stop sequence matching.
+        pending_buffer = []
+        pending_limit = max((s.shape[-1] for s in stop_ids_list))
+
+        pad_token_id = kwargs.get("pad_token_id", self.model.config.pad_token_id)
+
+        for (
+            tokens,
+            token_logprobs,
+            top_tokens,
+            top_logprobs,
+            status,
+        ) in self.generate_unbuffered(input_ids, logprobs, **kwargs):
+            # Store pending results for stop sequence matching.
+            pending_buffer.append(
+                (tokens, token_logprobs, top_tokens, top_logprobs, status)
+            )
+            # Post-process: Mark sequences with tailing stop id seuqnces as finished,
+            # and back-fill tokens of finished sequences with padding to omit stop ids.
+            for stop_ids in stop_ids_list:
+                ids_len = stop_ids.shape[-1]
+                if len(pending_buffer) < ids_len:
+                    continue
+                pending_tokens = torch.stack(
+                    [t for t, *_ in pending_buffer[-ids_len:]], dim=1
+                )
+                stop_match = pending_tokens[:, -ids_len:] == stop_ids
+                stop_match = stop_match.long().reshape(-1)
+                # Back fill padding and status for finished sequences.
+                for batch_idx in stop_match.nonzero(as_tuple=False):
+                    for buffer_idx in range(-ids_len, 0):
+                        pending_buffer[buffer_idx][0][batch_idx] = pad_token_id
+                        pending_buffer[buffer_idx][-1][batch_idx] = 0  # finished
+                # Mark sequences with stop ids as finished.
+                unstopped = unstopped.mul(1 - stop_match)
+
+            # Yield predictions and status from pending buffer.
+            if len(pending_buffer) >= pending_limit:
+                yield pending_buffer.pop(0)
+
+            # Stop when all sequences are finished.
+            if unstopped.sum() == 0:
+                yield from pending_buffer
+                break
+
+    def generate_unbuffered(self, input_ids, logprobs=0, **kwargs):
         """Generate a stream of predicted tokens using the language model."""
 
         # Store the original batch size and input length.
@@ -308,22 +362,6 @@ class StreamModel:
             if eos_token_id is not None:
                 not_eos = sum(tokens != i for i in eos_token_id)
                 unfinished = unfinished.mul(not_eos.long())
-
-            # Mark sequences with tailing stop id seuqnces as finished.
-            def _match_stop_ids(stop_ids):
-                stop_len = stop_ids.shape[-1]
-                to_stop = input_ids[:, -stop_len:] == stop_ids
-                _to_stop = to_stop.reshape(-1)
-                if _to_stop.sum() > 0:
-                    print("stop by", stop_ids, "at", input_ids)
-                return to_stop
-
-            if len(stop_ids_list) > 0:
-                stop_match = sum(
-                    _match_stop_ids(stop_ids) for stop_ids in stop_ids_list
-                )
-                not_stop = (stop_match == 0).reshape(-1)
-                unfinished = unfinished.mul(not_stop.long())
 
             # Set status to -1 if exceeded the max length.
             status = unfinished.clone()
