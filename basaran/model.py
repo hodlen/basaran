@@ -36,7 +36,7 @@ class StreamModel:
         top_p=1.0,
         n=1,
         logprobs=0,
-        stop=["\n", "."],
+        stop=[],
         echo=False,
         **kwargs,
     ):
@@ -57,11 +57,11 @@ class StreamModel:
 
         try:
             if isinstance(stop, str):
-                stop_sequences = [stop] if len(stop) > 0 else []
-            assert isinstance(stop_sequences, list)
-            stop_ids_list = [_tokenize_if_str(s) for s in stop_sequences]
+                stop = [stop] if len(stop) > 0 else []
+            assert isinstance(stop, list)
+            stop_ids_list = [_tokenize_if_str(s) for s in stop]
         except TypeError or AssertionError as e:
-            raise TypeError("stop_sequences must be a list of strings or 1-d tensors")
+            raise TypeError("stop must be a list of strings or 1-d tensors")
 
         # Ensure arguments are non-negative.
         min_tokens = max(min_tokens, 0)
@@ -204,13 +204,12 @@ class StreamModel:
             return
 
         batch_size = input_ids.shape[0]
-        unstopped = input_ids.new_ones(batch_size)
+        pad_token_id = kwargs.get("pad_token_id", self.model.config.pad_token_id)
 
         # Keep a buffer of pending generation results for stop sequence matching.
         pending_buffer = []
         pending_limit = max((s.shape[-1] for s in stop_ids_list))
-
-        pad_token_id = kwargs.get("pad_token_id", self.model.config.pad_token_id)
+        unstopped = input_ids.new_ones(batch_size)
 
         for (
             tokens,
@@ -219,7 +218,10 @@ class StreamModel:
             top_logprobs,
             status,
         ) in self.generate_unbuffered(input_ids, logprobs, **kwargs):
-            # Store pending results for stop sequence matching.
+            # Mask tokens and status of finished sequences.
+            if pad_token_id is not None:
+                tokens = tokens * unstopped + pad_token_id * (1 - unstopped)
+            status = status * unstopped
             pending_buffer.append(
                 (tokens, token_logprobs, top_tokens, top_logprobs, status)
             )
@@ -233,10 +235,11 @@ class StreamModel:
                     [t for t, *_ in pending_buffer[-ids_len:]], dim=1
                 )
                 stop_match = pending_tokens[:, -ids_len:] == stop_ids
-                stop_match = stop_match.long().reshape(-1)
+                stop_match = stop_match.all(dim=-1).long()
                 # Back fill padding and status for finished sequences.
                 for batch_idx in stop_match.nonzero(as_tuple=False):
                     for buffer_idx in range(-ids_len, 0):
+                        # TODO: what if the pad_token_id is None?
                         pending_buffer[buffer_idx][0][batch_idx] = pad_token_id
                         pending_buffer[buffer_idx][-1][batch_idx] = 0  # finished
                 # Mark sequences with stop ids as finished.
