@@ -331,8 +331,8 @@ def load_model(
         kwargs["cache_dir"] = cache_dir
     tokenizer = AutoTokenizer.from_pretrained(name_or_path, **kwargs)
 
-    # Set device mapping and quantization options if CUDA is available.
-    if torch.cuda.is_available():
+    # Set device mapping and quantization options if CUDA/MPS is available.
+    if torch.cuda.is_available() or torch.backends.mps.is_available():
         kwargs = kwargs.copy()
         kwargs["device_map"] = "auto"
         kwargs["load_in_8bit"] = load_in_8bit
