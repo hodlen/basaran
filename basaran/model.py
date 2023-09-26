@@ -41,16 +41,32 @@ class StreamModel:
         top_p=1.0,
         n=1,
         logprobs=0,
+        stop=[],
         echo=False,
         **kwargs,
     ):
         """Create a completion stream for the provided prompt."""
-        if isinstance(prompt, str):
-            input_ids = self.tokenize(prompt)
-        elif isinstance(prompt, torch.Tensor) and prompt.dim() == 1:
-            input_ids = prompt
-        else:
+
+        def _tokenize_if_str(text_repr):
+            if isinstance(text_repr, str):
+                return self.tokenize(text_repr)
+            elif isinstance(text_repr, torch.Tensor) and text_repr.dim() == 1:
+                return text_repr
+            else:
+                raise TypeError
+
+        try:
+            input_ids = _tokenize_if_str(prompt)
+        except TypeError:
             raise TypeError("prompt must be a string or a 1-d tensor")
+
+        try:
+            if isinstance(stop, str):
+                stop = [stop] if len(stop) > 0 else []
+            assert isinstance(stop, list)
+            stop_ids_list = [_tokenize_if_str(s) for s in stop]
+        except TypeError or AssertionError as e:
+            raise TypeError("stop must be a list of strings or 1-d tensors")
 
         # Ensure arguments are non-negative.
         min_tokens = max(min_tokens, 0)
@@ -96,6 +112,7 @@ class StreamModel:
             status,
         ) in self.generate(
             input_ids[None, :].repeat(n, 1),
+            stop_ids_list=stop_ids_list,
             **generate_kwargs,
         ):
             for i in range(n):
@@ -186,7 +203,65 @@ class StreamModel:
         batch = self.tokenizer.encode(text, return_tensors="pt")
         return batch[0].to(self.device)
 
-    def generate(self, input_ids, logprobs=0, **kwargs):
+    def generate(self, input_ids, logprobs=0, stop_ids_list=[], **kwargs):
+        """Generate a steram of predicted tokens using the language model, supporting multiple stop sequences."""
+        if len(stop_ids_list) == 0:
+            yield from self.generate_unbuffered(input_ids, logprobs, **kwargs)
+            return
+
+        batch_size = input_ids.shape[0]
+        pad_token_id = kwargs.get("pad_token_id", self.model.config.pad_token_id)
+
+        # Keep a buffer of pending generation results for stop sequence matching.
+        pending_buffer = []
+        pending_limit = max((s.shape[-1] for s in stop_ids_list))
+        unstopped = input_ids.new_ones(batch_size)
+
+        for (
+            tokens,
+            token_logprobs,
+            top_tokens,
+            top_logprobs,
+            status,
+        ) in self.generate_unbuffered(input_ids, logprobs, **kwargs):
+            # Mask tokens and status of finished sequences.
+            if pad_token_id is not None:
+                tokens = tokens * unstopped + pad_token_id * (1 - unstopped)
+            status = status * unstopped
+            pending_buffer.append(
+                (tokens, token_logprobs, top_tokens, top_logprobs, status)
+            )
+            # Post-process: Mark sequences with tailing stop id seuqnces as finished,
+            # and back-fill tokens of finished sequences with padding to omit stop ids.
+            for stop_ids in stop_ids_list:
+                ids_len = stop_ids.shape[-1]
+                if len(pending_buffer) < ids_len:
+                    continue
+                pending_tokens = torch.stack(
+                    [t for t, *_ in pending_buffer[-ids_len:]], dim=1
+                )
+                stop_match = pending_tokens[:, -ids_len:] == stop_ids
+                stop_match = stop_match.all(dim=-1).long()
+                # Back fill padding and status for finished sequences.
+                for batch_idx in stop_match.nonzero(as_tuple=False):
+                    for buffer_idx in range(-ids_len, 0):
+                        # TODO: what if the pad_token_id is None?
+                        pending_buffer[buffer_idx][0][batch_idx] = pad_token_id
+                        pending_buffer[buffer_idx][-1][batch_idx] = 0  # finished
+                # Mark sequences with stop ids as finished.
+                unstopped = unstopped.mul(1 - stop_match)
+
+            # Yield predictions and status from pending buffer.
+            if len(pending_buffer) >= pending_limit:
+                yield pending_buffer.pop(0)
+
+            # Stop when all sequences are finished.
+            if unstopped.sum() == 0:
+                break
+
+        yield from pending_buffer
+
+    def generate_unbuffered(self, input_ids, logprobs=0, **kwargs):
         """Generate a stream of predicted tokens using the language model."""
 
         # Store the original batch size and input length.
