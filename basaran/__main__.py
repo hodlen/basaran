@@ -9,33 +9,34 @@ import waitress
 from flask import Flask, Response, abort, jsonify, render_template, request
 from flask_cors import CORS
 
-from . import is_true
+# Configurations from environment variables.
+from . import (
+    COMPLETION_MAX_INTERVAL,
+    COMPLETION_MAX_LOGPROBS,
+    COMPLETION_MAX_N,
+    COMPLETION_MAX_PROMPT,
+    COMPLETION_MAX_TOKENS,
+    HOST,
+    MODEL,
+    MODEL_CACHE_DIR,
+    MODEL_HALF_PRECISION,
+    MODEL_LOAD_IN_4BIT,
+    MODEL_LOAD_IN_8BIT,
+    MODEL_LOCAL_FILES_ONLY,
+    MODEL_REVISION,
+    MODEL_TRUST_REMOTE_CODE,
+    PORT,
+    SERVER_CHANNEL_TIMEOUT,
+    SERVER_CONNECTION_LIMIT,
+    SERVER_CORS_ORIGINS,
+    SERVER_IDENTITY,
+    SERVER_MODEL_NAME,
+    SERVER_NO_PLAYGROUND,
+    SERVER_THREADS,
+    is_true,
+)
 from .choice import reduce_choice
 from .model import load_model
-
-# Configurations from environment variables.
-from . import MODEL
-from . import HOST
-from . import PORT
-from . import MODEL_REVISION
-from . import MODEL_CACHE_DIR
-from . import MODEL_LOAD_IN_8BIT
-from . import MODEL_LOAD_IN_4BIT
-from . import MODEL_LOCAL_FILES_ONLY
-from . import MODEL_TRUST_REMOTE_CODE
-from . import MODEL_HALF_PRECISION
-from . import SERVER_THREADS
-from . import SERVER_IDENTITY
-from . import SERVER_CONNECTION_LIMIT
-from . import SERVER_CHANNEL_TIMEOUT
-from . import SERVER_MODEL_NAME
-from . import SERVER_NO_PLAYGROUND
-from . import SERVER_CORS_ORIGINS
-from . import COMPLETION_MAX_PROMPT
-from . import COMPLETION_MAX_TOKENS
-from . import COMPLETION_MAX_N
-from . import COMPLETION_MAX_LOGPROBS
-from . import COMPLETION_MAX_INTERVAL
 
 # Load the language model to be served.
 stream_model = load_model(
@@ -140,6 +141,7 @@ def create_completion():
         "stream": bool,
         "logprobs": int,
         "echo": bool,
+        "stop": str,
     }
     options = parse_options(schema)
     if "prompt" not in options:
