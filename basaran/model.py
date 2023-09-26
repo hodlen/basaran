@@ -80,6 +80,7 @@ class StreamModel:
                 logprobs=logprobs,
                 min_new_tokens=min_tokens,
                 max_new_tokens=max_tokens,
+                do_sampling=True,
                 temperature=temperature,
                 top_p=top_p,
             ),
